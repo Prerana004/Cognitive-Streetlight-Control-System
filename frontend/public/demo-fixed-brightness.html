@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Smart Streetlight Simulation (MQTT)</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      color: #fff;
+      font-family: monospace;
+    }
+
+    #hud {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="hud">
+    <div>MQTT: <span id="sse">connecting...</span></div>
+    <div>Frame: <span id="ts">—</span></div>
+    <div>Last: <span id="last-msg">—</span></div>
+    <div style="margin-top:6px;"><button id="btn-toggle-sse"
+        style="padding:6px; background:#222; color:#ffd27a; border:1px solid #444; cursor:pointer;">Stop MQTT</button>
+    </div>
+  </div>
+
+  <div id="json-panel"
+    style="position:absolute; right:10px; top:10px; z-index:20; background:rgba(0,0,0,0.6); padding:8px; border-radius:6px; width:300px;">
+    <div style="color:#ffd27a; font-family:monospace; margin-bottom:6px;">JSON Input (paste payload)</div>
+    <textarea id="json-input"
+      style="width:100%; height:90px; background:#111; color:#eee; border:1px solid #333; font-family:monospace; font-size:12px; padding:6px;"></textarea>
+    <div style="display:flex; gap:6px; margin-top:6px;">
+      <button id="btn-apply-json"
+        style="flex:1; padding:6px; background:#222; color:#ffd27a; border:1px solid #444; cursor:pointer;">Apply
+        JSON</button>
+      <button id="btn-fill-example"
+        style="padding:6px; background:#222; color:#fff; border:1px solid #444; cursor:pointer;">Example</button>
+    </div>
+  </div>
+
+  <script>
+    const scene = new THREE.Scene();
+    // subtle bluish night fog (very low) so distant lights still read
+    scene.fog = new THREE.FogExp2(0x050613, 0.0009);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 4000);
+    camera.position.set(0, 20, 200);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0, 0);
+    controls.maxPolarAngle = Math.PI / 2 - 0.05;
+    controls.screenSpacePanning = false;
+    controls.enablePan = true;
+    controls.update();
+
+    // Low ambient so lamps stand out at night
+    scene.add(new THREE.AmbientLight(0x111111, 0.12));
+
+    // --- Road and Sidewalk Creation (Omitted for brevity, assumed functional) ---
+    function createRoadTexture(width = 1024, height = 2048) {
+      const c = document.createElement('canvas');
+      c.width = width; c.height = height;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#2e2e2e';
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = '#f2f2c9';
+      ctx.lineWidth = 8;
+      ctx.setLineDash([60, 40]);
+      ctx.lineDashOffset = 0;
+      ctx.beginPath();
+      ctx.moveTo(width / 2, 0);
+      ctx.lineTo(width / 2, height);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = '#dddddd';
+      ctx.beginPath();
+      ctx.moveTo(width * 0.18, 0);
+      ctx.lineTo(width * 0.18, height);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(width * 0.82, 0);
+      ctx.lineTo(width * 0.82, height);
+      ctx.stroke();
+      return new THREE.CanvasTexture(c);
+    }
+
+    const roadTex = createRoadTexture();
+    roadTex.wrapS = roadTex.wrapT = THREE.RepeatWrapping;
+    roadTex.repeat.set(1, 30);
+    const roadWidth = 120;
+    const roadGeom = new THREE.PlaneGeometry(roadWidth, 3000);
+    const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughness: 0.45, metalness: 0.15 });
+    const road = new THREE.Mesh(roadGeom, roadMat);
+    road.rotation.x = -Math.PI / 2;
+    road.receiveShadow = true;
+    scene.add(road);
+
+    const sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x555556, roughness: 0.9, metalness: 0.02 });
+    const sidewalkL = new THREE.Mesh(new THREE.BoxGeometry(12, 0.2, 3000), sidewalkMat);
+    sidewalkL.position.set(-roadWidth / 2 + 4, 0.1, 0);
+    sidewalkL.receiveShadow = true;
+    scene.add(sidewalkL);
+    const sidewalkR = sidewalkL.clone();
+    sidewalkR.position.set(roadWidth / 2 - 4, 0.1, 0);
+    scene.add(sidewalkR);
+
+    const curbMat = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.8 });
+    const curbL = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.4, 3000), curbMat);
+    curbL.position.set(-roadWidth / 2 + 9.5, 0.2, 0);
+    scene.add(curbL);
+    const curbR = curbL.clone(); curbR.position.set(roadWidth / 2 - 9.5, 0.2, 0); scene.add(curbR);
+    // --- End Road and Sidewalk Creation ---
+
+
+    const lights = [];
+    const lampById = new Map();
+    const maxInt = 80.0, baseInt = 4.0;
+
+    const labelContainer = document.createElement('div');
+    labelContainer.style.position = 'absolute';
+    labelContainer.style.left = '0';
+    labelContainer.style.top = '0';
+    labelContainer.style.pointerEvents = 'none';
+    document.body.appendChild(labelContainer);
+
+    function makeLamp(id, x, z) {
+      const g = new THREE.Group();
+      g.position.set(x, 0, z);
+
+      // pole, arm, head housing, glass (omitted structure details for brevity)
+      const poleMat = new THREE.MeshStandardMaterial({ color: 0x222226, metalness: 0.6, roughness: 0.5 });
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 15, 10), poleMat);
+      pole.position.y = 7.5;
+      g.add(pole);
+
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 2.6), poleMat);
+      arm.position.set(0, 14.7, 1.2);
+      g.add(arm);
+
+      const headMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.7, roughness: 0.25 });
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.25, 0.9), headMat);
+      head.position.set(0, 14.7, 2.6);
+      g.add(head);
+
+      const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffe6b3, emissive: 0x000000, emissiveIntensity: 1, metalness: 0.1, roughness: 0.3 });
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.24, 16, 12), bulbMat);
+      bulb.position.set(0, 14.7, 2.35);
+      g.add(bulb);
+
+      // spot light
+      const spot = new THREE.SpotLight(0xffd27a, baseInt, 300, 0.5, 0.4, 2);
+      spot.position.set(x, 14.7, z + 2.35);
+      const tgt = new THREE.Object3D(); tgt.position.set(x, 0, z + 14);
+      scene.add(tgt);
+      spot.target = tgt;
+      spot.castShadow = true;
+      spot.shadow.mapSize.width = spot.shadow.mapSize.height = 1024;
+      g.add(spot);
+
+      // ground illumination disk
+      const diskCanvas = document.createElement('canvas');
+      diskCanvas.width = diskCanvas.height = 256;
+      const dctx = diskCanvas.getContext('2d');
+      const dgr = dctx.createRadialGradient(128, 128, 8, 128, 128, 128);
+      dgr.addColorStop(0, 'rgba(255,240,190,1)');
+      dgr.addColorStop(1, 'rgba(255,200,120,0)');
+      dctx.fillStyle = dgr; dctx.fillRect(0, 0, 256, 256);
+      const diskTex = new THREE.CanvasTexture(diskCanvas);
+      const diskGeom = new THREE.CircleGeometry(3.5, 32);
+      const diskMat = new THREE.MeshBasicMaterial({ map: diskTex, transparent: true, opacity: 0.02, blending: THREE.AdditiveBlending, depthWrite: false });
+      const groundLight = new THREE.Mesh(diskGeom, diskMat);
+      groundLight.rotation.x = -Math.PI / 2;
+      groundLight.position.set(0, 0.02, 3.5);
+      groundLight.renderOrder = 1;
+      g.add(groundLight);
+
+      // glow sprite
+      const glowCanvas = document.createElement('canvas'); glowCanvas.width = glowCanvas.height = 128;
+      const gctx = glowCanvas.getContext('2d');
+      const grd = gctx.createRadialGradient(64, 64, 8, 64, 64, 64);
+      grd.addColorStop(0, 'rgba(255,245,200,0.95)');
+      grd.addColorStop(1, 'rgba(255,200,100,0)');
+      gctx.fillStyle = grd; gctx.fillRect(0, 0, 128, 128);
+      const spriteMap = new THREE.CanvasTexture(glowCanvas);
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: spriteMap, color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending }));
+      sprite.position.set(0, 14.7, 2.35);
+      sprite.scale.set(1.6, 1.6, 1.6);
+      g.add(sprite);
+
+      // DOM label
+      const label = document.createElement('div');
+      label.className = 'lamp-label';
+      label.style.position = 'absolute';
+      label.style.padding = '4px 6px';
+      label.style.background = 'rgba(0,0,0,0.6)';
+      label.style.color = '#ffd27a';
+      label.style.fontSize = '12px';
+      label.style.fontFamily = 'monospace';
+      label.style.borderRadius = '4px';
+      label.style.transform = 'translate(-50%, -150%)';
+      label.textContent = '0%';
+      labelContainer.appendChild(label);
+
+      g.position.set(x, 0, z);
+      scene.add(g);
+
+      const rec = { id, group: g, spot, bulb, sprite, groundLight, label, targetIntensity: baseInt };
+      lights.push(rec);
+      lampById.set(id, rec);
+    }
+
+    // Place 4 lamps on the right side
+    (function placeLampsEvenly(x, zStart, zEnd, count) {
+      if (count <= 0) return;
+      for (let i = 0; i < count; i++) {
+        const t = (count === 1) ? 0.5 : i / (count - 1);
+        const z = zStart + (zEnd - zStart) * t;
+        makeLamp('L' + (i + 1), x, Math.round(z));
+      }
+    })(roadWidth / 2 - 4, -120, 120, 4);
+
+    // Set initial camera view
+    camera.position.set(0, 28, 200);
+    camera.lookAt(0, 0, 0);
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    function setFromBrightness(id, b) {
+      const rec = lampById.get(id);
+      if (!rec) return;
+      const t = Math.max(0, Math.min(1, b / 100));
+      rec.targetIntensity = baseInt + (maxInt - baseInt) * t;
+      if (rec && rec.label) {
+        rec.label.textContent = Math.round(t * 100) + '%';
+      }
+    }
+
+    function applyBrightnessCmds(cmds) {
+      if (cmds && typeof cmds === 'object') {
+        Object.entries(cmds).forEach(([id, b]) => {
+          setFromBrightness(id, b);
+        });
+      }
+    }
+
+    function applyJSON(payload) {
+      try {
+        let obj = payload;
+        if (typeof payload === 'string') obj = JSON.parse(payload);
+        if (obj == null) return;
+        if (obj.cmds && typeof obj.cmds === 'object') {
+          applyBrightnessCmds(obj.cmds);
+        } else {
+          const maybeCmds = {};
+          Object.entries(obj).forEach(([k, v]) => {
+            if (/^L\d+$/i.test(k) && (typeof v === 'number' || typeof v === 'string')) {
+              maybeCmds[k] = Number(v);
+            }
+          });
+          if (Object.keys(maybeCmds).length) applyBrightnessCmds(maybeCmds);
+        }
+        if (obj.ts) {
+          const val = typeof obj.ts === 'number' ? obj.ts : Date.now();
+          tsEl.textContent = (val / 1000).toFixed(2);
+        }
+      } catch (e) {
+        console.warn('applyJSON parse failed', e);
+      }
+    }
+
+    // ---------------- MQTT Implementation ----------------
+
+    const MQTT_BROKER = "broker.hivemq.com";
+    const MQTT_PORT = 8000; // WebSocket port for HiveMQ
+    const MQTT_PATH = "/mqtt"; // Path for HiveMQ WebSocket
+    const MQTT_COMMAND_TOPIC = "smart_streetlights/commands/brightness";
+
+    const sseEl = document.getElementById('sse'), tsEl = document.getElementById('ts');
+    const lastMsgEl = document.getElementById('last-msg');
+    const btnToggleSse = document.getElementById('btn-toggle-sse');
+    btnToggleSse.textContent = 'Stop MQTT';
+
+    let mqttClient = null;
+    let mqttRunning = false;
+
+    function onConnect() {
+      mqttRunning = true;
+      sseEl.textContent = 'connected';
+      sseEl.style.color = '#0f0';
+      console.log('[MQTT] Connected. Subscribing to:', MQTT_COMMAND_TOPIC);
+      // Subscribe to the topic the backend is publishing to
+      mqttClient.subscribe(MQTT_COMMAND_TOPIC, { qos: 0 });
+    }
+
+    function onConnectionLost(responseObject) {
+      mqttRunning = false;
+      if (responseObject.errorCode !== 0) {
+        sseEl.textContent = 'lost';
+        sseEl.style.color = '#ffa500';
+        console.warn('[MQTT] Connection Lost:', responseObject.errorMessage);
+      }
+      // Attempt to reconnect after a delay
+      setTimeout(startMQTT, 3000);
+    }
+
+    function onMessageArrived(message) {
+      try {
+        // Parse the JSON payload from the message
+        const payload = JSON.parse(message.payloadString);
+        applyJSON(payload);
+        try { lastMsgEl.textContent = JSON.stringify(payload).slice(0, 200); } catch (_) { lastMsgEl.textContent = 'received'; }
+      } catch (e) {
+        console.warn('[MQTT] Message parse error:', e);
+      }
+    }
+
+    function startMQTT() {
+      if (mqttRunning) return;
+
+      sseEl.textContent = 'connecting...';
+      sseEl.style.color = '#fff';
+
+      const clientId = 'web_client_' + parseInt(Math.random() * 100000, 10);
+
+      mqttClient = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, MQTT_PATH, clientId);
+
+      mqttClient.onConnectionLost = onConnectionLost;
+      mqttClient.onMessageArrived = onMessageArrived;
+
+      mqttClient.connect({
+        onSuccess: onConnect,
+        onFailure: (response) => {
+          mqttRunning = false;
+          sseEl.textContent = 'error';
+          sseEl.style.color = '#f00';
+          console.error('[MQTT] Connection failed:', response.errorMessage);
+        },
+        useSSL: false
+      });
+
+      btnToggleSse.textContent = 'Stop MQTT';
+    }
+
+    function stopMQTT() {
+      if (mqttClient) {
+        try { mqttClient.disconnect(); } catch (_) { }
+        mqttClient = null;
+      }
+      mqttRunning = false;
+      sseEl.textContent = 'stopped';
+      sseEl.style.color = '#ffa500';
+      btnToggleSse.textContent = 'Start MQTT';
+      lastMsgEl.textContent = '—';
+    }
+
+    // Initialize MQTT connection
+    startMQTT();
+
+    btnToggleSse.addEventListener('click', () => {
+      if (mqttRunning) stopMQTT(); else startMQTT();
+    });
+
+    // ---------------- Animation Loop ----------------
+
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+      controls.update();
+
+      lights.forEach(rec => {
+        // Smoothly transition intensity
+        const diff = Math.abs(rec.targetIntensity - rec.spot.intensity);
+        const speed = 4 + diff * 6;
+        rec.spot.intensity = THREE.MathUtils.lerp(rec.spot.intensity, rec.targetIntensity, Math.min(1, speed * dt));
+
+        // Visual feedback calculation
+        const t = Math.max(0, Math.min(1, rec.spot.intensity / maxInt));
+        const visual = Math.pow(t, 1.5);
+
+        // Update bulb emissive color and intensity
+        if (rec.bulb && rec.bulb.material) {
+          rec.bulb.material.emissive.setHex(0xffd27a);
+          rec.bulb.material.emissiveIntensity = 0.2 + 32.0 * visual;
+          rec.bulb.material.needsUpdate = true;
+        }
+
+        // Update glow sprite scale & opacity
+        if (rec.sprite && rec.sprite.material) {
+          const scale = 1.0 + 3.2 * visual;
+          rec.sprite.scale.set(scale, scale, scale);
+          rec.sprite.material.opacity = 0.06 + 1.6 * visual;
+        }
+
+        // Update ground pool of light
+        if (rec.groundLight && rec.groundLight.material) {
+          const gs = 1.0 + 4.0 * visual;
+          rec.groundLight.scale.set(gs, gs, 1);
+          rec.groundLight.material.opacity = 0.02 + 0.55 * visual;
+          rec.groundLight.material.needsUpdate = true;
+        }
+
+        // Update DOM label position and value
+        if (rec.label) {
+          const pos = new THREE.Vector3();
+          rec.group.getWorldPosition(pos);
+          pos.y += 15;
+          pos.project(camera);
+          const x = (pos.x * 0.5 + 0.5) * window.innerWidth;
+          const y = (- pos.y * 0.5 + 0.5) * window.innerHeight;
+          rec.label.style.left = x + 'px';
+          rec.label.style.top = y + 'px';
+          const pct = Math.round(((rec.targetIntensity - baseInt) / (maxInt - baseInt)) * 100);
+          rec.label.textContent = pct + '%';
+        }
+      });
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // wire up JSON panel buttons
+    document.getElementById('btn-apply-json').addEventListener('click', () => {
+      const txt = document.getElementById('json-input').value.trim();
+      if (!txt) return;
+      try { applyJSON(txt); } catch (e) { console.warn('applyJSON error', e); }
+    });
+    document.getElementById('btn-fill-example').addEventListener('click', () => {
+      document.getElementById('json-input').value = JSON.stringify({ cmds: { L1: 92, L2: 70, L3: 45, L4: 10 }, ts: Date.now() });
+    });
+
+    console.log('[Init] Scene fixed and visible ✅');
+  </script>
+</body>
+
+</html>

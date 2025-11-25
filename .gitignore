@@ -1,0 +1,119 @@
+# -------------------------
+# NODE / FRONTEND
+# -------------------------
+node_modules/
+dist/
+build/
+.cache/
+*.log
+bun.lockb
+
+# -------------------------
+# PYTHON / BACKEND
+# -------------------------
+myenv/
+venv/
+env/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# -------------------------
+# ENV VARIABLES / SECRETS
+# -------------------------
+.env
+.env.local
+
+# -------------------------
+# MODEL FILES (YOLO, DL)
+# -------------------------
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.h5
+*.ckpt
+*.bin
+*.weights
+*.safetensors
+
+# -------------------------
+# DATASETS / VIDEOS
+# -------------------------
+datasets/
+data/
+raw_data/
+videos/
+images/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.gif
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.iso
+*.whl
+
+# -------------------------
+# TRAINING ARTIFACTS
+# -------------------------
+runs/
+results/
+outputs/
+checkpoints/
+wandb/
+tensorboard/
+labels/
+annotations/
+
+# -------------------------
+# CACHE / TEMP
+# -------------------------
+*.cache
+*.npy
+*.npz
+temp/
+tmp/
+
+# -------------------------
+# SYSTEM FILES
+# -------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -------------------------
+# IDE / EDITOR FILES
+# -------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# -------------------------
+# DOCKER
+# -------------------------
+docker-compose.yml
+.docker/
+
+# -------------------------
+# MISC
+# -------------------------
+npm-debug.log*
+yarn-error.log*
+
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+*.tif
+*.svg
+*.ico           
