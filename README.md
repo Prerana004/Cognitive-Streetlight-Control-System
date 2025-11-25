@@ -9,6 +9,11 @@ Prerequisites
   - `backend/accident_detection/model_weights.h5`
   - `backend/brightness_engine/yolov8n.pt`
 
+Requirements
+- Backend Python packages (install via `pip install -r backend/requirements.txt`):
+  - `flask`, `flask-cors`, `paho-mqtt`, `opencv-python`, `numpy`, `tensorflow`, `ultralytics`, `yt-dlp`, `pandas`, `matplotlib`, `scipy`, `pygame` (optional)
+- Frontend packages are defined in `frontend/package.json` and installed with `npm install`.
+
 Backend (Python)
 1. Create and activate a venv (PowerShell):
 
@@ -53,5 +58,3 @@ Notes
 - Default MQTT broker is `broker.hivemq.com`; change broker in code if required.
 - If the camera is not available, supply a video file in `backend/accident_detection` or pass a camera index.
 
-That's it — this README contains only the install and run steps. I just pushed this file to the `main` branch.
-```powershell
