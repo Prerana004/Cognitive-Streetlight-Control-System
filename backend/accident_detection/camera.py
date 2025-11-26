@@ -14,6 +14,9 @@ import platform
 from pathlib import Path
 
 # Alert system imports
+import smtplib
+import ssl
+from email.message import EmailMessage
 try:
     import winsound  # Windows
     SOUND_AVAILABLE = True
@@ -30,7 +33,7 @@ class AccidentDetector:
     """Enhanced accident detection system with error handling and alerts"""
     
     def __init__(self, model_json="model.json", model_weights="model_weights.h5", 
-                 video_source=None, threshold=90.0):
+                 video_source=None, threshold=90.0, email_config=None):
         """
         Initialize Accident Detector
         
@@ -39,10 +42,16 @@ class AccidentDetector:
             model_weights: Path to model weights file
             video_source: Video file path or camera index (None = try camera 0, then look for video files)
             threshold: Confidence threshold for alerts (0-100)
+            email_config: Dictionary containing email settings (server, port, user, password, etc.)
         """
         self.threshold = threshold
         self.last_alert_time = 0
-        self.alert_cooldown = 2.0  # Minimum seconds between alerts
+        self.alert_cooldown = 2.0  # Minimum seconds between sound alerts
+        
+        # Email Alert Configuration
+        self.email_config = email_config
+        self.last_email_time = 0
+        self.email_cooldown = 60.0  # Minimum seconds between email alerts (1 minute)
         
         # Get base directory
         self.base_dir = Path(__file__).parent
@@ -106,6 +115,47 @@ class AccidentDetector:
         print("Usage: python camera.py [video_file_path or camera_index]")
         return None
     
+    def _send_email_alert(self, confidence):
+        """Send email alert for detected accident"""
+        if not self.email_config:
+            return
+
+        current_time = time.time()
+        if current_time - self.last_email_time < self.email_cooldown:
+            return
+
+        print("\n[ALERT] Attempting to send email alert...")
+        self.last_email_time = current_time
+
+        try:
+            msg = EmailMessage()
+            msg.set_content(f"""
+URGENT: Accident Detected!
+
+Confidence: {confidence:.1f}%
+Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+Please check the live feed immediately.
+            """)
+
+            msg['Subject'] = f'CRITICAL: Accident Detected ({confidence:.1f}%)'
+            msg['From'] = self.email_config.get('sender', self.email_config['username'])
+            msg['To'] = self.email_config['username']  # Send to self/admin
+
+            context = ssl.create_default_context()
+            
+            with smtplib.SMTP(self.email_config['server'], self.email_config['port']) as server:
+                if self.email_config.get('use_tls', True):
+                    server.starttls(context=context)
+                
+                server.login(self.email_config['username'], self.email_config['password'])
+                server.send_message(msg)
+                
+            print("[ALERT] Email sent successfully!")
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to send email alert: {e}")
+
     def _play_alert(self):
         """Play alert sound"""
         if not SOUND_AVAILABLE:
@@ -180,6 +230,7 @@ class AccidentDetector:
             # Trigger alert if accident detected above threshold
             if pred == "Accident" and confidence >= self.threshold:
                 self._play_alert()
+                self._send_email_alert(confidence)
             
             return processed_frame, pred, confidence
             

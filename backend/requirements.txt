@@ -1,0 +1,19 @@
+# Backend Python dependencies for Cognitive Streetlight Control System
+# Install with: pip install -r requirements.txt
+
+flask>=2.0
+flask-cors
+paho-mqtt
+opencv-python
+numpy
+tensorflow>=2.11
+ultralytics
+yt-dlp
+pandas
+matplotlib
+scipy
+pygame
+
+# Note:
+# - On Windows, you may prefer the official TensorFlow package matching your Python and CUDA versions.
+# - `opencv-python` provides GUI functions (cv2.imshow). If you only need headless processing, consider `opencv-python-headless`.

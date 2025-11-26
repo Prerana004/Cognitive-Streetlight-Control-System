@@ -40,6 +40,16 @@ MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "smart_streetlights/metrics"
 
+# Email Configuration
+EMAIL_CONFIG = {
+    'server': 'smtp.gmail.com',
+    'port': 587,
+    'use_tls': True,
+    'username': 'fashionapk7@gmail.com',
+    'password': 'qius vpsa wxaf sbia',  # App Password
+    'sender': 'fashionapk7@gmail.com'
+}
+
 announcer = MessageAnnouncer()
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -81,7 +91,7 @@ def start_camera_thread():
     while True:
         try:
             # Initialize the detector
-            detector = AccidentDetector(video_source=0)
+            detector = AccidentDetector(video_source=0, email_config=EMAIL_CONFIG)
             print("Camera initialized. Starting detection stream...")
             
             # Iterate over the generator to get frames

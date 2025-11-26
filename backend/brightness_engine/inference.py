@@ -21,9 +21,9 @@ import yt_dlp
 # ==========================================
 # 0. CONFIGURATION
 # ==========================================
-TARGET_DURATION_MINUTES = 10
+TARGET_DURATION_MINUTES = 60
 
-YOUTUBE_LIVE_URL = "https://www.youtube.com/live/9SLt3AT0rXk?si=_Xt5G_qiZoTrEOKS"
+YOUTUBE_LIVE_URL = "https://www.youtube.com/live/CF1vS8DdBIk?si=_OBV52WfYldoMUHn"
 
 # 🔵 LOCAL SAVE PATHS (NO COLAB)
 SAVE_DIR = r"D:\FINAL+PROJECT\backend\brightness_engine"
