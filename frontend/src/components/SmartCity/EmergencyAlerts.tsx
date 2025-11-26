@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useSmartCity, Alert } from "./SmartCityContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,28 @@ import {
   Activity
 } from "lucide-react";
 import { motion } from "framer-motion";
+// Leaflet map
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import iconUrl from 'leaflet/dist/images/marker-icon.png';
+import iconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png';
+import shadowUrl from 'leaflet/dist/images/marker-shadow.png';
+
+// Fix default icon paths for Leaflet when using Vite
+(L.Icon.Default as unknown as { mergeOptions: (opts: Record<string, string>) => void }).mergeOptions({
+  iconRetinaUrl,
+  iconUrl,
+  shadowUrl
+});
+
+// Small custom user location icon (blue dot)
+const userIcon = L.divIcon({
+  html: `<div style="width:14px;height:14px;background:#2563EB;border-radius:50%;box-shadow:0 0 6px rgba(37,99,235,0.7);border:2px solid white"></div>`,
+  className: '',
+  iconSize: [18, 18],
+  iconAnchor: [9, 9]
+});
 
 const AlertCard = ({ alert }: { alert: Alert }) => {
   const getIcon = () => {
@@ -37,6 +59,9 @@ const AlertCard = ({ alert }: { alert: Alert }) => {
     medium: 'bg-yellow-500 text-black',
     low: 'bg-blue-500 text-white'
   };
+
+  const { updateAlert } = useSmartCity();
+  const [processing, setProcessing] = useState(false);
 
   return (
     <motion.div
@@ -71,13 +96,73 @@ const AlertCard = ({ alert }: { alert: Alert }) => {
             </div>
           </div>
           <div className="flex gap-2 mt-3">
-            <Button size="sm" variant="outline" className="text-xs">
+            <Button size="sm" variant="outline" className="text-xs" disabled={processing} onClick={async () => {
+              setProcessing(true);
+              try {
+                // optimistic UI update
+                updateAlert(alert.id, { status: 'investigating', responders: (alert.responders || 0) + 1 });
+
+                const res = await fetch('http://localhost:5000/respond', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ alertId: alert.id, action: 'dispatch' })
+                });
+
+                const json = await res.json().catch(() => null);
+                if (json && json.status === 'ok') {
+                  // backend acknowledged; set dispatched state
+                  updateAlert(alert.id, { status: 'investigating' });
+                } else {
+                  // backend failed - revert or mark as active
+                  updateAlert(alert.id, { status: 'active' });
+                }
+              } catch (e) {
+                console.error('Failed to send response', e);
+                updateAlert(alert.id, { status: 'active' });
+              } finally {
+                setProcessing(false);
+              }
+            }}>
               <Phone className="h-3 w-3 mr-1" />
-              Contact
+              {processing ? 'Sending...' : 'Send Response'}
             </Button>
-            <Button size="sm" variant="outline" className="text-xs">
+
+            <Button size="sm" variant="outline" className="text-xs" onClick={async () => {
+              setProcessing(true);
+              try {
+                // Request ambulance through backend so dispatch can be tracked
+                const res = await fetch('http://localhost:5000/respond', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ alertId: alert.id, action: 'ambulance' })
+                });
+                const json = await res.json().catch(() => null);
+
+                // Open maps for navigation regardless of backend
+                const coords = alert.coordinates;
+                if (coords && coords.length === 2) {
+                  const [lat, lng] = coords;
+                  const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+                  window.open(url, '_blank');
+                } else {
+                  const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(alert.location)}`;
+                  window.open(url, '_blank');
+                }
+
+                if (json && json.status === 'ok') {
+                  updateAlert(alert.id, { status: 'investigating' });
+                } else {
+                  updateAlert(alert.id, { status: 'active' });
+                }
+              } catch (e) {
+                console.error('Failed to request ambulance', e);
+                updateAlert(alert.id, { status: 'active' });
+              } finally {
+                setProcessing(false);
+              }
+            }}>
               <Activity className="h-3 w-3 mr-1" />
-              Track
+              {processing ? 'Requesting...' : 'Request Ambulance'}
             </Button>
           </div>
         </div>
@@ -86,106 +171,172 @@ const AlertCard = ({ alert }: { alert: Alert }) => {
   );
 };
 
-const CityMap = () => (
-  <div className="h-96 bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 rounded-lg relative overflow-hidden">
-    {/* Mock City Grid */}
-    <svg className="absolute inset-0 w-full h-full" viewBox="0 0 400 300">
-      {/* Streets */}
-      <g stroke="currentColor" strokeWidth="2" fill="none" className="text-muted-foreground/30">
-        {/* Horizontal streets */}
-        {Array.from({ length: 8 }, (_, i) => (
-          <line key={`h-${i}`} x1="0" y1={i * 40 + 20} x2="400" y2={i * 40 + 20} />
+const CityMap = () => {
+  const { alerts } = useSmartCity();
+  const [userLoc, setUserLoc] = useState<[number, number] | null>(null);
+
+  useEffect(() => {
+    let watcherId: number | null = null;
+    const success = (pos: GeolocationPosition) => setUserLoc([pos.coords.latitude, pos.coords.longitude]);
+    const error = (err: unknown) => {
+      console.warn('Geolocation denied or unavailable', err);
+      // fallback to IP-based geolocation
+      fetch('https://ipapi.co/json/').then(res => res.json()).then((json) => {
+        if (json && json.latitude && json.longitude) {
+          setUserLoc([parseFloat(json.latitude), parseFloat(json.longitude)]);
+        }
+      }).catch(() => {
+        // ignore
+      });
+    };
+
+    const requestLocation = () => {
+      if (!navigator.geolocation) {
+        error(new Error('Geolocation not supported'));
+        return;
+      }
+
+      // Prefer high accuracy and give a bit more time
+      navigator.geolocation.getCurrentPosition(success, error, { timeout: 10000, maximumAge: 0, enableHighAccuracy: true });
+      try {
+        watcherId = navigator.geolocation.watchPosition(success, () => {/* ignore errors on watch */}, { enableHighAccuracy: true, maximumAge: 0 });
+      } catch (e) {
+        // ignore
+      }
+    };
+    // Request location directly (avoid Permissions API typing issues)
+    requestLocation();
+
+    return () => {
+      if (watcherId !== null && navigator.geolocation && typeof navigator.geolocation.clearWatch === 'function') {
+        navigator.geolocation.clearWatch(watcherId as number);
+      }
+    };
+  }, []);
+
+  const center = useMemo(() => {
+    if (userLoc) return userLoc;
+    // fallback center: New York
+    return [40.7128, -74.0060] as [number, number];
+  }, [userLoc]);
+
+  // Component to move the map when user location changes
+  const MoveToLocation = ({ position }: { position: [number, number] | null }) => {
+    const map = useMap();
+    useEffect(() => {
+      if (position) {
+        try {
+          map.setView(position, 15, { animate: true });
+        } catch (e) {
+          // ignore
+        }
+      }
+    }, [position, map]);
+    return null;
+  };
+
+  // React-Leaflet types sometimes mismatch in this workspace; temporarily allow `any` here
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const RLMap = MapContainer as unknown as any;
+  const RLTile = TileLayer as unknown as any;
+  const RLMarker = Marker as unknown as any;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  return (
+    <div className="h-96 rounded-lg overflow-hidden">
+      <div className="relative h-full w-full">
+        <RLMap center={center as unknown} zoom={13} style={{ height: '100%', width: '100%' }}>
+        <RLTile
+          attribution={'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}
+          url={'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'}
+        />
+
+        {/* Move the map to the user's location when it becomes available */}
+        <MoveToLocation position={userLoc} />
+
+        {userLoc && (
+          <RLMarker position={userLoc} icon={userIcon}>
+            <Popup>Your location</Popup>
+          </RLMarker>
+        )}
+
+        {alerts.filter(a => a.coordinates).map(a => (
+          <RLMarker key={a.id} position={a.coordinates as [number, number]}>
+            <Popup>
+              <div className="text-sm">
+                <strong className="capitalize">{a.type}</strong>
+                <div>{a.location}</div>
+                <div className="mt-1">
+                  <Button size="sm" variant="ghost" onClick={() => {
+                    const [lat, lng] = a.coordinates as [number, number];
+                    const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+                    window.open(url, '_blank');
+                  }}>Navigate</Button>
+                </div>
+              </div>
+            </Popup>
+          </RLMarker>
         ))}
-        {/* Vertical streets */}
-        {Array.from({ length: 10 }, (_, i) => (
-          <line key={`v-${i}`} x1={i * 40 + 20} y1="0" x2={i * 40 + 20} y2="300" />
-        ))}
-      </g>
-      
-      {/* Buildings */}
-      <g fill="currentColor" className="text-muted-foreground/50">
-        <rect x="40" y="40" width="30" height="25" />
-        <rect x="80" y="30" width="35" height="35" />
-        <rect x="130" y="50" width="25" height="20" />
-        <rect x="200" y="25" width="40" height="45" />
-        <rect x="260" y="40" width="30" height="30" />
-        <rect x="320" y="35" width="35" height="35" />
-        
-        <rect x="50" y="120" width="25" height="30" />
-        <rect x="100" y="110" width="40" height="40" />
-        <rect x="170" y="130" width="30" height="25" />
-        <rect x="230" y="115" width="35" height="35" />
-        <rect x="290" y="125" width="25" height="25" />
-        
-        <rect x="60" y="200" width="35" height="30" />
-        <rect x="120" y="190" width="30" height="40" />
-        <rect x="180" y="210" width="40" height="25" />
-        <rect x="250" y="195" width="25" height="35" />
-        <rect x="310" y="205" width="30" height="25" />
-      </g>
-      
-      {/* Active Alert Markers */}
-      <g>
-        <circle cx="150" cy="80" r="8" fill="red" className="animate-pulse" />
-        <circle cx="250" cy="160" r="6" fill="orange" className="animate-pulse" />
-        <circle cx="320" cy="220" r="5" fill="yellow" />
-      </g>
-      
-      {/* Street Light Icons */}
-      <g fill="currentColor" className="text-primary">
-        {Array.from({ length: 15 }, (_, i) => (
-          <circle 
-            key={`light-${i}`} 
-            cx={(i % 5) * 80 + 60} 
-            cy={Math.floor(i / 5) * 80 + 60} 
-            r="3"
-            className="opacity-60"
-          />
-        ))}
-      </g>
-    </svg>
-    
-    {/* Legend */}
-    <div className="absolute bottom-4 left-4 bg-background/90 backdrop-blur-sm rounded-lg p-3 text-xs">
-      <div className="flex items-center gap-2 mb-1">
-        <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-        <span>Critical Alert</span>
-      </div>
-      <div className="flex items-center gap-2 mb-1">
-        <div className="w-3 h-3 bg-orange-500 rounded-full"></div>
-        <span>High Priority</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="w-3 h-3 bg-primary rounded-full"></div>
-        <span>Street Lights</span>
+      </RLMap>
+
+        {/* Manual locate button overlay */}
+        <div className="absolute top-3 right-3 z-20">
+          <button
+            className="bg-white p-2 rounded shadow hover:bg-gray-100 text-xs flex items-center gap-2"
+            onClick={() => {
+              if (!navigator.geolocation) return;
+              navigator.geolocation.getCurrentPosition((pos) => {
+                setUserLoc([pos.coords.latitude, pos.coords.longitude]);
+              }, (err) => {
+                console.warn('Manual locate failed', err);
+              }, { enableHighAccuracy: true, timeout: 10000 });
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" stroke="#111827" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <circle cx="12" cy="12" r="3" stroke="#111827" strokeWidth="1.5"/>
+            </svg>
+            <span>Locate Me</span>
+          </button>
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 const EmergencyAlerts = () => {
   const { alerts, addAlert } = useSmartCity();
+  const alertsRef = useRef(alerts);
 
-  // Fetch real-time data from backend
+  // keep a ref of alerts to avoid re-creating EventSource on every alert update
+  useEffect(() => { alertsRef.current = alerts; }, [alerts]);
+
+  // Fetch real-time data from backend (single EventSource)
   useEffect(() => {
     const eventSource = new EventSource("http://localhost:5000/events");
 
     eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      try {
+        const data = JSON.parse(event.data);
 
-      if (data.prediction === 'Accident' && data.confidence > 90 && !alerts.some(a => a.type === 'accident' && a.status === 'active')) {
-        // Avoid creating duplicate alerts for the same event
-        addAlert({
-          id: Date.now().toString(),
-          type: 'accident',
-          severity: 'critical',
-          location: `Intersection ${Math.floor(Math.random() * 100)}`,
-          coordinates: [40.7128 + (Math.random() - 0.5) * 0.1, -74.0060 + (Math.random() - 0.5) * 0.1],
-          description: `Vehicle collision detected with ${data.confidence.toFixed(1)}% confidence.`,
-          timestamp: 'Just now',
-          status: 'active',
-          responders: Math.floor(Math.random() * 3) + 1
-        });
+        if (data.prediction === 'Accident' && data.confidence > 90) {
+          const already = alertsRef.current.some(a => a.type === 'accident' && a.status === 'active');
+          if (!already) {
+            addAlert({
+              id: Date.now().toString(),
+              type: 'accident',
+              severity: 'critical',
+              location: `Intersection ${Math.floor(Math.random() * 100)}`,
+              coordinates: [40.7128 + (Math.random() - 0.5) * 0.1, -74.0060 + (Math.random() - 0.5) * 0.1],
+              description: `Vehicle collision detected with ${data.confidence.toFixed(1)}% confidence.`,
+              timestamp: 'Just now',
+              status: 'active',
+              responders: Math.floor(Math.random() * 3) + 1
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse SSE event', e);
       }
     };
 
